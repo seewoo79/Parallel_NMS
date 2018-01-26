@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <cuda_runtime.h>
+#include <math_functions.h>
 #include <iostream>
 #include <opencv2/core/core.hpp>
 #include <opencv2/highgui/highgui.hpp>
@@ -8,6 +9,7 @@
 using namespace cv;
 using namespace std;
 
+#define DISPLAY 1
 
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
@@ -31,18 +33,18 @@ __device__
 float IOUcalc(box b1, box b2)
 {
 	//Get Union of boxes
-	float tlx_u = min(b1.x, b2.x);
-	float tly_u = min(b1.y, b2.y);
+	float tlx_u = fmin(b1.x, b2.x);
+	float tly_u = fmin(b1.y, b2.y);
 
-	float brx_u = max(b1.x + b1.w, b2.x + b2.w);
-	float bry_u = max(b1.y + b1.h, b2.y + b2.h);
+	float brx_u = fmax(b1.x + b1.w, b2.x + b2.w);
+	float bry_u = fmax(b1.y + b1.h, b2.y + b2.h);
 
 	//Get Intersection of boxes
-	float tlx_i = max(b1.x, b2.x);
-	float tly_i = max(b1.y, b2.y);
+	float tlx_i = fmax(b1.x, b2.x);
+	float tly_i = fmax(b1.y, b2.y);
 
-	float brx_i = min(b1.x + b1.w, b2.x + b2.w);
-	float bry_i = min(b1.y + b1.h, b2.y + b2.h);
+	float brx_i = fmin(b1.x + b1.w, b2.x + b2.w);
+	float bry_i = fmin(b1.y + b1.h, b2.y + b2.h);
 
 	float w_u = brx_u - tlx_u;
 	float h_u = bry_u - tly_u;
@@ -56,18 +58,18 @@ float IOUcalc(box b1, box b2)
 }
 
 __global__
-void NMS_GPU(box *d_b, bool *d_res, const float theta)
+void NMS_GPU(box *d_b, bool *d_res, const float thd, const float theta)
 {
 	int target = blockIdx.x;
 	int current = threadIdx.x;
+	int neighbor = 0;
+	int n_theta = 0.3f;
 
 	if(d_b[target].s > d_b[current].s)
 	{
 		float iou = IOUcalc(d_b[target], d_b[current]);
-		if (iou > theta)	
-		{
-			d_res[current] = false; 
-		}
+		if(iou > theta)
+			d_res[current] = false;
 	}
 }
 
@@ -76,9 +78,10 @@ int main()
 {
 	int count = 6;
 	Mat input = imread("./0.jpg",1);
+#if DISPLAY
 	imshow("Input", input);
 	waitKey(0);
-	
+#endif	
 	bool *h_res =(bool *)malloc(sizeof(bool)*count);
 	
 	for(int i = 0; i < count; i++)
@@ -92,11 +95,13 @@ int main()
 	b[1].x = 16; b[1].y = 12; b[1].w = 64; b[1].h = 128; b[1].s = 0.79062;
 	b[0].x = 11; b[0].y = 6; b[0].w = 74; b[0].h = 148; b[0].s = 0.11855;
 	
+#if DISPLAY
 	Mat temp = input.clone();
 	for(int i = 0; i < count ; i++)
 		rectangle(temp, Point(b[i].x,b[i].y), Point(b[i].x + b[i].w,b[i].y + b[i].h), Scalar(0,255,0), 1, 8, 0);
 	imshow("Temp", temp);
 	waitKey(0);
+#endif
 
 	box *d_b;
 	bool *d_res;
@@ -107,7 +112,7 @@ int main()
 	gpuErrchk(cudaMalloc((void**)&d_b, sizeof(box) * count));
 	gpuErrchk(cudaMemcpy(d_b, b, sizeof(box) * count, cudaMemcpyHostToDevice));
 		
-	NMS_GPU <<< count, count >>> (d_b, d_res, 0.6f);
+	NMS_GPU <<< count, count >>> (d_b, d_res, 0.8f, 0.3f);
 	
 	cudaThreadSynchronize();
 	
@@ -115,15 +120,17 @@ int main()
 	
 	for(int i = 0; i < count ; i++)
 	{
-		printf("res : %d\n", h_res[i]);
-		if(*(h_res + i) == true)
+		printf("Results= %d--%d\n",i ,h_res[i]);
+		if(h_res[i] == true)
 		{
-			printf("Results= %d--%d ",i,*(h_res+i));
-			rectangle(input, Point(b[i].x,b[i].y), Point(b[i].x + b[i].w,b[i].y + b[i].h), Scalar(255,0,0), 1, 8, 0);
+			rectangle(input, Point(b[i].x, b[i].y), Point(b[i].x + b[i].w, b[i].y + b[i].h), Scalar(255,0,0), 1, 8, 0);
+			fflush(stdout);
 		}
 	}
 
+#if DISPLAY
 	imshow("Output",input);
 	waitKey(0);
+#endif
 	return 0;
 }
